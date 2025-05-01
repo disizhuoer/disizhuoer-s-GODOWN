@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0" version="26.2.14">
   <diagram id="prtHgNgQTEPvFCAcTncT" name="Page-1">
-    <mxGraphModel dx="2206" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="2206" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" background="light-dark(#FFFFFF,#7EA6E0)" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -17,7 +17,7 @@
           <mxGeometry x="460" y="440" width="310" height="250" as="geometry" />
         </mxCell>
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-11" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;通信&lt;/h1&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
-          <mxGeometry x="480" y="390" width="180" height="120" as="geometry" />
+          <mxGeometry x="680" y="685" width="180" height="120" as="geometry" />
         </mxCell>
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-16" value="连接" style="swimlane;startSize=20;horizontal=1;containerType=tree;newEdgeStyle={&quot;edgeStyle&quot;:&quot;elbowEdgeStyle&quot;,&quot;startArrow&quot;:&quot;none&quot;,&quot;endArrow&quot;:&quot;none&quot;};" vertex="1" parent="1">
           <mxGeometry x="475" y="455" width="280" height="220" as="geometry" />
@@ -42,7 +42,7 @@
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-22" value="" style="shape=doubleArrow;whiteSpace=wrap;html=1;" vertex="1" parent="1">
           <mxGeometry x="350" y="585" width="110" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="ztPW5d4EabjY-B8oM5Ry-23" value="交互" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=26;fillColor=none;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;html=1;" vertex="1" parent="1">
+        <mxCell id="ztPW5d4EabjY-B8oM5Ry-23" value="&lt;h1&gt;&lt;font face=&quot;Comic Sans MS&quot;&gt;交互&lt;/font&gt;&lt;/h1&gt;" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=26;fillColor=none;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;html=1;" vertex="1" parent="1">
           <mxGeometry x="465" y="860" width="300" height="130" as="geometry" />
         </mxCell>
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-25" value="1&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;&amp;nbsp;蜂鸣报警 ← LED指示 │" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;whiteSpace=wrap;html=1;" vertex="1" parent="ztPW5d4EabjY-B8oM5Ry-23">
@@ -70,7 +70,7 @@
             <mxPoint x="230" y="650" as="sourcePoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="ztPW5d4EabjY-B8oM5Ry-36" value="信号调理 → 温度补偿" style="whiteSpace=wrap;html=1;align=center;verticalAlign=middle;treeFolding=1;treeMoving=1;" vertex="1" parent="1">
+        <mxCell id="ztPW5d4EabjY-B8oM5Ry-36" value="信号调理 → 温度补偿" style="whiteSpace=wrap;html=1;align=center;verticalAlign=middle;treeFolding=1;treeMoving=1;labelBorderColor=light-dark(#000000,#FF0000);" vertex="1" parent="1">
           <mxGeometry x="50" y="690" width="170" height="140" as="geometry" />
         </mxCell>
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-37" value="校准计算 → 质量验证" style="whiteSpace=wrap;html=1;align=center;verticalAlign=middle;treeFolding=1;treeMoving=1;" vertex="1" parent="1">
@@ -79,7 +79,7 @@
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-39" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;数据处理&lt;/h1&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="180" y="660" width="110" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="ztPW5d4EabjY-B8oM5Ry-40" value="电池管理与存储" style="ellipse;whiteSpace=wrap;html=1;align=center;newEdgeStyle={&quot;edgeStyle&quot;:&quot;entityRelationEdgeStyle&quot;,&quot;startArrow&quot;:&quot;none&quot;,&quot;endArrow&quot;:&quot;none&quot;,&quot;segment&quot;:10,&quot;curved&quot;:1,&quot;sourcePerimeterSpacing&quot;:0,&quot;targetPerimeterSpacing&quot;:0};treeFolding=1;treeMoving=1;" vertex="1" parent="1">
+        <mxCell id="ztPW5d4EabjY-B8oM5Ry-40" value="&lt;h1&gt;&lt;b&gt;&lt;font face=&quot;Garamond&quot;&gt;电池管理与存储&lt;/font&gt;&lt;/b&gt;&lt;/h1&gt;" style="ellipse;whiteSpace=wrap;html=1;align=center;newEdgeStyle={&quot;edgeStyle&quot;:&quot;entityRelationEdgeStyle&quot;,&quot;startArrow&quot;:&quot;none&quot;,&quot;endArrow&quot;:&quot;none&quot;,&quot;segment&quot;:10,&quot;curved&quot;:1,&quot;sourcePerimeterSpacing&quot;:0,&quot;targetPerimeterSpacing&quot;:0};treeFolding=1;treeMoving=1;" vertex="1" parent="1">
           <mxGeometry x="-100" y="990" width="320" height="120" as="geometry" />
         </mxCell>
         <mxCell id="ztPW5d4EabjY-B8oM5Ry-41" value="SD卡存储 → 深度睡眠" style="whiteSpace=wrap;html=1;rounded=1;arcSize=50;align=center;verticalAlign=middle;strokeWidth=1;autosize=1;spacing=4;treeFolding=1;treeMoving=1;newEdgeStyle={&quot;edgeStyle&quot;:&quot;entityRelationEdgeStyle&quot;,&quot;startArrow&quot;:&quot;none&quot;,&quot;endArrow&quot;:&quot;none&quot;,&quot;segment&quot;:10,&quot;curved&quot;:1,&quot;sourcePerimeterSpacing&quot;:0,&quot;targetPerimeterSpacing&quot;:0};" vertex="1" parent="1">
