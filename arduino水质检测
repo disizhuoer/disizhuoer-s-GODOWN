@@ -1,0 +1,1064 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <LoRa.h>
+#include <SD.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <BluetoothSerial.h>
+#include <Adafruit_AS7341.h>
+#include <Adafruit_SSD1306.h>
+#include <esp_sleep.h>
+#include <esp_task_wdt.h>
+#include <esp_rmaker_core.h>
+#include <esp_rmaker_standard_params.h>
+#include <esp_rmaker_ota.h>
+#include <Preferences.h>
+// 系统
+#define DEBUG_MODE true
+#define LORA_BAND 433.0E6
+#define SD_CS 5
+#define LOW_VOLTAGE 3.2
+#define BAT_DIVIDER 2.0
+#define PH_CAL_SLOPE 0.03
+#define ORP_CAL_SLOPE 2.5
+#define ORP_SCALE 0.004
+#define ORP_OFFSET 0.12
+#define EC_CAL_REF 1413.0  // 电导率校准基准
+#define TDS_FACTOR 0.65    // TDS转换系数
+#define SAMPLE_AVG_TIMES 16
+#define CALIBRATION_FLAG 0x55AA
+#define EEPROM_SIZE 64
+// 电源软启动参数
+#define SOFT_START_TIME 2000  // 软启动时长(ms)
+#define PWM_RESOLUTION 8      // PWM分辨率
+#define PWM_FREQ 1000         // PWM频率
+// 传感器重试参数
+#define MAX_RETRIES 3
+#define RETRY_DELAY 500
+// 电导率交流激励参数
+#define EC_FREQ 1000    // 1kHz方波
+#define EC_DUTY 128     // 50%占空比
+#define EC_CYCLES 10    // 采样周期数
+//引脚
+enum Pins {
+ TEMP_PIN = 4,      // 单总线温度传感器（保持D4不变）    
+ PH_PIN = 32,       // pH传感器 ADC1_CH4 (原GPIO32)    
+ DO_PIN = 33,       // 溶解氧 ADC1_CH5 (原GPIO33改为AMMONIA)    
+ AMMONIA_PIN = 34,  // 氨氮 ADC1_CH6 (原GPIO34改为NITRATE)    
+ NITRATE_PIN = 35,  // 硝酸盐 ADC1_CH7 (原GPIO35)    
+ NITRITE_PIN = 36,  // 亚硝酸盐 ADC1_CH0 (保持GPIO36不变)    
+ PHOSPHATE_PIN = 39,// 磷酸盐 ADC1_CH3 (保持GPIO39不变)        
+ // ==== 电化学传感器（改为数字传感器或改用ADC1）====    
+ ORP_PIN = 12,      // 氧化还原电位（改为数字IO，原LORA_RST需要调整）    
+ EC_PIN = 14,       // 电导率（改为数字IO，原PUMP_PIN需要调整）
+ EC_DRIVE_PIN = 16, // GPIO16连接MOS管驱动电路        
+ // ==== 外设控制 ====    
+ PUMP_PIN = 13,     // 水泵控制（原BAT_PIN位置）    
+ LED_PIN = 18,      // 状态指示灯（保持GPIO18）    
+ BUZZER_PIN = 5,   // 蜂鸣器（保持GPIO5）        
+ // ==== 电源管理 ====    
+ BAT_PIN = 27,      // 电池检测 ADC1_CH6（使用原SENSOR_POWER引脚）    
+ SENSOR_POWER = 25, // 传感器电源控制（改用原ORP_PIN的GPIO25）        
+ // ==== 通信接口 ====    
+ LORA_CS = 15,      // 保持GPIO15    
+ LORA_RST = 19,      // LoRa复位（原BTN_PREV引脚需要调整）    
+ LORA_DIO0 = 17,    // 保持GPIO17        
+ // ==== 用户交互 ====    
+ BTN_PREV = 2,      // 按钮1（原GPIO5改为GPIO2）    
+ BTN_NEXT = 26,     // 按钮2（原GPIO2改为GPIO26）        
+ // ==== 显示模块 ====    
+ OLED_SDA = 21,      // 保持GPIO21    
+ OLED_SCL = 22,      // 保持GPIO22
+};
+// 报警级
+enum AlarmLevel {
+  LEVEL_INFO,
+  LEVEL_WARNING,
+  LEVEL_URGENT,
+  LEVEL_CRITICAL
+};
+// 传感器故障
+enum SensorFault {
+  FAULT_NONE,
+  FAULT_TEMP_SENSOR,
+  FAULT_SPECTRAL_SENSOR,//光
+  FAULT_PH_SENSOR,
+  FAULT_EC_SENSOR,  // 电导
+  FAULT_ION_SENSOR
+};
+// 校准参数结构体
+// 溶解氧多项式
+struct DO_Calib {   
+  float a = 0.001; // 二次项系数  
+  float b = 0.5;   // 一次项系数   
+  float c = 0.1;   // 常数项
+} do_calib; 
+// 浊度线性
+struct Turb_Calib {  
+  float slope = 1.2f; // 斜率  
+  float offset = -50.0f; // 偏移量
+} turb_calib; 
+// PH校准结构体
+struct PH_Calib {  
+  float ph_low_ref = 4.0;    // 低点标准值   
+  float ph_high_ref = 10.0;   // 高点标准值  
+  float ph_slope = 1.0;       // 计算斜率  
+  float ph_offset = 0.0;      // 计算偏移
+} ph_calib; 
+// 电导率结构体
+struct EC_Calib {           
+  float ec_low_ref = 1413.0;  // 低点标准值  
+  float ec_high_ref = 5000.0; // 高点标准值  
+  float ec_slope = 1.0;       // 斜率  
+  float ec_offset = 0.0;      // 偏移  
+  float ec_temp_coef = 0.019; // 温度系数
+} ec_calib;
+//ADC
+struct ADC_Calib {    
+  float gain = 1.0;    
+  float offset = 0.0;
+} adc_calib[40]; // 为每个ADC通道保存校准参数
+// 非阻塞报警控制结构体
+struct AlarmState {
+  bool active = false;
+  AlarmLevel level;
+  String message;
+  uint32_t patternStart;
+  uint8_t beepCount = 0;
+};
+AlarmState alarmState;
+// 系统对象
+struct {
+  Adafruit_SSD1306 display = Adafruit_SSD1306(128, 64, &Wire);
+  Adafruit_AS7341 as7341;
+  OneWire oneWire = OneWire(TEMP_PIN);
+  DallasTemperature tempSensor = DallasTemperature(&oneWire);
+  BluetoothSerial SerialBT;
+  Preferences prefs;
+} hw;
+// 传感器数据结构
+#pragma pack(push, 1)
+struct SensorData {
+  float temperature;
+  float ph;
+  float dissolved_oxygen;
+  float ammonia;
+  float orp;
+  float salinity = 0.0;
+  float cod;
+  float chla;
+  float turbidity;
+  float nitrate;
+  float nitrite;
+  float conductivity;  // 电导率
+  float tds;           // 溶解性总固体
+  float phosphate;
+  float battery;
+  uint16_t crc;
+};
+#pragma pack(pop)
+// 全局变量
+SensorData currentData;
+uint8_t displayPage = 0;
+volatile bool spiBusLocked = false;
+bool alarmMuted = false;
+static esp_rmaker_node_t *node;
+static esp_rmaker_device_t *sensor_dev;
+// 温度传感器CRC校验函数
+bool validateTemperatureCRC(DeviceAddress deviceAddress) {
+  uint8_t crc = 0;
+  uint8_t data[8];
+  if (!hw.oneWire.read_bytes(data, 9)) return false;
+  
+  for (uint8_t i = 0; i < 8; i++) {
+    crc = OneWire::crc8(data, 8);
+  }
+  return (crc == data[8]);
+}
+// ==========================================
+// SPI总线管理
+// ==========================================
+class SPIBusGuard {
+  public:    
+  SPIBusGuard() {         
+    while(spiBusLocked) delay(1);        
+    spiBusLocked = true;        
+    SPI.beginTransaction(SPISettings(10E6, MSBFIRST, SPI_MODE0));    
+  }    
+  ~SPIBusGuard() {        
+    SPI.endTransaction();        
+    spiBusLocked = false;    
+  }
+  private:    
+  static volatile bool spiBusLocked;
+};
+volatile bool SPIBusGuard::spiBusLocked = false;
+// ==========================================
+// 看门狗初始化
+// ==========================================
+void initWatchdog() {
+  #if CONFIG_IDF_TARGET_ESP32    // 检查是否使用了ADC2通道    
+  bool useADC2 = false;    
+  const uint8_t adc2Pins[] = {BAT_PIN, EC_PIN, ORP_PIN}; // 根据实际使用的ADC2引脚修改    
+  for(auto pin : adc2Pins){        
+    if(pin == BAT_PIN || pin == EC_PIN || pin == ORP_PIN){            
+      useADC2 = true;            
+      break;        
+    }    
+  }        
+  if(useADC2) {        
+    WiFi.mode(WIFI_OFF);        
+    btStop();    
+  }
+  #endif     
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);    
+  if(!LoRa.begin(LORA_BAND) && DEBUG_MODE) {        
+    Serial.println("LoRa Init Fail");    
+  }
+  esp_task_wdt_config_t twdt_config = {
+    .timeout_ms = 30000,
+    .trigger_panic = true
+  };
+  if (esp_task_wdt_init(&twdt_config) != ESP_OK && DEBUG_MODE) {
+    Serial.println("WDog Init Fail");
+  }
+}
+void feedWatchdog() {
+  static uint32_t lastFeed = 0;
+  if(millis() - lastFeed > 500) {
+    esp_task_wdt_reset();
+    lastFeed = millis();
+  }
+}
+void safeDelay(uint32_t ms) {  
+  uint32_t start = millis();  
+  while(millis()-start < ms) {    
+    delay(100);    
+    feedWatchdog();  // 每次循环喂狗    
+    yield();         // 处理后台任务  
+  }
+}
+// ==========================================
+//补档预备
+// ==========================================
+// 电源软启动函数
+void softPowerOn() {
+  ledcSetup(1, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(SENSOR_POWER, 1);
+  
+  for(int duty=0; duty<=EC_DUTY; duty+=5){
+    ledcWrite(1, duty);
+    delay(SOFT_START_TIME/(EC_DUTY/5));
+  }
+  digitalWrite(SENSOR_POWER, HIGH); // 保持全开
+}
+// 电导率交流激励驱动
+void enableECExcitation(bool state) {
+  static uint32_t lastEnable = 0;
+  if(state && (millis() - lastEnable < 100)) {
+    Serial.println("WARN: EC激励过频!");
+    return;
+  }
+  lastEnable = millis();
+  static bool initialized = false;
+  if(!initialized){
+    ledcSetup(2, EC_FREQ, PWM_RESOLUTION);
+    ledcAttachPin(EC_DRIVE_PIN, 2);
+    initialized = true;
+  }
+  ledcWrite(2, state ? EC_DUTY : 0);
+}
+// 温度读取（带CRC校验）
+float readTemperatureWithCRC() {
+  static float lastValid = 25.0;
+  DeviceAddress tempAddr;
+  if(!hw.tempSensor.getAddress(tempAddr, 0)){
+    triggerAlarm(LEVEL_WARNING, "Temp Sensor Lost");
+    return lastValid;
+  }
+  for(int retry=0; retry<MAX_RETRIES; retry++){
+    hw.tempSensor.requestTemperatures();
+    delay(800); // 确保转换完成
+    
+    if(validateTemperatureCRC(tempAddr)){
+      float tempC = hw.tempSensor.getTempC(tempAddr);
+      if(tempC != DEVICE_DISCONNECTED_C) {
+        return lastValid = tempC;
+      }
+    }
+    if(retry < MAX_RETRIES-1){
+      delay(RETRY_DELAY);
+      hw.tempSensor.begin(); // 尝试重新初始化
+    }
+  }
+  triggerAlarm(LEVEL_URGENT, "Temp CRC Fail");
+  return lastValid;
+}
+// ==========================================
+// 校准参数存取
+// ==========================================
+void saveCalibration() {
+  hw.prefs.putFloat("do_a", do_calib.a);
+  hw.prefs.putFloat("do_b", do_calib.b);
+  hw.prefs.putFloat("do_c", do_calib.c);
+  hw.prefs.putFloat("turb_slope", turb_calib.slope);
+  // PH参数存储
+  hw.prefs.putFloat("ph_low", ph_calib.ph_low_ref);
+  hw.prefs.putFloat("ph_high", ph_calib.ph_high_ref);
+  hw.prefs.putFloat("ph_slope", ph_calib.ph_slope);
+  hw.prefs.putFloat("ph_offset", ph_calib.ph_offset);
+  // EC参数存储
+  hw.prefs.putFloat("ec_low", ec_calib.ec_low_ref);
+  hw.prefs.putFloat("ec_high", ec_calib.ec_high_ref);
+  hw.prefs.putFloat("ec_slope", ec_calib.ec_slope);
+  hw.prefs.putFloat("ec_offset", ec_calib.ec_offset);
+  hw.prefs.putFloat("ec_temp_coef", ec_calib.ec_temp_coef);
+}
+void loadCalibration() {
+  do_calib.a = hw.prefs.getFloat("do_a", 1.0);
+  do_calib.b = hw.prefs.getFloat("do_b", 0.0);
+  do_calib.c = hw.prefs.getFloat("do_c", 0.0);
+  turb_calib.slope = hw.prefs.getFloat("turb_slope", 1.0);
+   // PH参数加载
+  ph_calib.ph_low_ref = hw.prefs.getFloat("ph_low", 4.0);
+  ph_calib.ph_high_ref = hw.prefs.getFloat("ph_high", 10.0);
+  ph_calib.ph_slope = hw.prefs.getFloat("ph_slope", 1.0);
+  ph_calib.ph_offset = hw.prefs.getFloat("ph_offset", 0.0);
+  // EC参数加载
+  ec_calib.ec_low_ref = hw.prefs.getFloat("ec_low", 1413.0);
+  ec_calib.ec_high_ref = hw.prefs.getFloat("ec_high", 5000.0);
+  ec_calib.ec_slope = hw.prefs.getFloat("ec_slope", 1.0);
+  ec_calib.ec_offset = hw.prefs.getFloat("ec_offset", 0.0);
+  ec_calib.ec_temp_coef = hw.prefs.getFloat("ec_temp_coef", 0.019);
+}
+
+// ==========================================
+// 硬件初始化
+// ==========================================
+void initHardware() {
+  Wire.begin(OLED_SDA, OLED_SCL);
+  initWatchdog();
+  // 初始化输出引脚
+  const uint8_t outputs[] = {LED_PIN, BUZZER_PIN, PUMP_PIN, SENSOR_POWER};
+  for (int i = 0; i < sizeof(outputs)/sizeof(outputs[0]); i++) {
+    pinMode(outputs[i], OUTPUT);
+    digitalWrite(outputs[i], LOW);
+  }
+  // 初始化输入引脚
+  const uint8_t inputs[] = {BTN_PREV, BTN_NEXT, EC_PIN};
+  for (int i = 0; i < sizeof(inputs)/sizeof(inputs[0]); i++) {
+    pinMode(inputs[i], INPUT_PULLUP);
+  }
+  softPowerOn();
+  hw.prefs.begin("syscfg", false);
+  loadCalibration();
+  // ADC校准加载    
+  for(int pin=0; pin<40; pin++){        
+    adc_calib[pin].gain = hw.prefs.getFloat(("adcG"+String(pin)).c_str(), 1.0);  
+    adc_calib[pin].offset = hw.prefs.getFloat(("adcO"+String(pin)).c_str(), 0.0); 
+  }
+}
+void calibrateADC(uint8_t pin) {    
+  Serial.printf("请将引脚GPIO%d连接到3.3V,然后按任意键继续\n", pin);    
+  while(!Serial.available()) delay(100);    
+  Serial.read();        
+  uint32_t sum = 0;    
+  for(int i=0; i<100; i++){        
+    sum += analogRead(pin);        delay(10);    }    
+    float actualVoltage = 3.3; // 已知校准电压    
+    float measuredVoltage = (sum / 100.0) * 3.3 / 4095.0;        
+    adc_calib[pin].gain = actualVoltage / measuredVoltage;    
+    adc_calib[pin].offset = 0;        
+    hw.prefs.putFloat(("adcG"+String(pin)).c_str(), adc_calib[pin].gain);    
+    hw.prefs.putFloat(("adcO"+String(pin)).c_str(), adc_calib[pin].offset);        
+    Serial.printf("校准完成！新增益：%.4f\n", adc_calib[pin].gain);
+  }
+// ==========================================
+// 传感器初始化（新增电导率检测）
+// ==========================================
+void initSensors() {
+  hw.tempSensor.begin();
+  hw.tempSensor.setResolution(12);
+  // 光谱传感器
+  if(!hw.as7341.begin() && DEBUG_MODE) {
+    Serial.println("AS7341 Init Fail");
+  }
+  hw.as7341.setADCParameters(AS7341_ADC_256X_GAIN, 100, 999);
+  // 电导率传感器校准
+  pinMode(EC_PIN, INPUT);
+  enableECExcitation(true);  // 启用交流激励
+  delay(100);                // 稳定时间
+}
+// ==========================================
+// 无线模块初始化
+// ==========================================
+void initWireless() {
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);    
+  if(!LoRa.begin(LORA_BAND) && DEBUG_MODE) {        
+    Serial.println("LoRa Init Failed");    
+  }        
+  // 初始化RainMaker    
+  initRainMaker();
+}
+void initRainMaker() {    
+  node = esp_rmaker_node_init(&(esp_rmaker_config_t){  
+    .enable_time_sync = true,        
+    .enable_schedule = true    
+  }, "AquaMonitor", "Water-Quality");     
+  sensor_dev = esp_rmaker_device_create("WaterSensor", ESP_RMAKER_DEVICE_SENSOR, NULL);        // 创建标准参数    
+  esp_rmaker_param_t *temp_param = esp_rmaker_temp_param_create("temperature", 0);    
+  esp_rmaker_param_t *ph_param = esp_rmaker_param_create("ph", ESP_RMAKER_PARAM_CUSTOM,esp_rmaker_float(0), PROP_FLAG_READ | PROP_FLAG_UNIT("pH"));        
+  esp_rmaker_device_add_param(sensor_dev, temp_param);    
+  esp_rmaker_device_add_param(sensor_dev, ph_param);    
+  esp_rmaker_node_add_device(node, sensor_dev);        
+  esp_rmaker_ota_enable_default();    
+  esp_rmaker_start();
+}
+// ==========================================
+// 显示初始化
+// ==========================================
+void initDisplay() {
+  if(!hw.display.begin(SSD1306_SWITCHCAPVCC, 0x3C) && DEBUG_MODE) {
+    Serial.println("OLED Init Fail");
+  }
+  hw.display.clearDisplay();
+  hw.display.setTextSize(1);
+  hw.display.setTextColor(SSD1306_WHITE);
+  hw.display.display();
+}
+// ==========================================
+// 电池电压读取
+// ==========================================
+float readBattery() {
+  static float lastVoltage = 4.0;
+  float raw = analogReadMilliVolts(BAT_PIN) * BAT_DIVIDER / 1000.0;
+  return lastVoltage = 0.9 * lastVoltage + 0.1 * raw;
+}
+// ==========================================
+// 传感器数据采集（完整实现电导率/TDS）
+// ==========================================
+void readSensors() {
+  // 上电序列  
+  static uint32_t lastPowerOn = 0;
+  if(millis() - lastPowerOn > 5000) { // 每5秒稳定供电
+    softPowerOn();
+    lastPowerOn = millis();
+  }
+  static float lastValidTemp = 25.0;
+  // 温度采集
+  currentData.temperature = readTemperatureWithCRC();
+  // 光谱传感器
+  currentData.cod = hw.as7341.getChannel(AS7341_CH6_610nm_F1);
+  currentData.chla = hw.as7341.getChannel(AS7341_CH2_430nm_F3);
+  currentData.turbidity = hw.as7341.getChannel(AS7341_CH4_550nm_F5);
+  // 模拟信号采集（含电导率）
+  auto readAnalog = [](uint8_t pin, float scale, float offset) -> float {
+    uint32_t sum = 0;
+    uint8_t valid = 0;
+    for(int i=0; i<SAMPLE_AVG_TIMES*2; i++) {
+      int val = analogRead(pin);
+      if(abs(val - (sum/(valid+1))) < 100 || valid==0) {
+        sum += val;
+        valid++;
+      }
+      if(valid >= SAMPLE_AVG_TIMES) break;
+      delayMicroseconds(200);
+    }
+    return (sum / (float)valid) * scale + offset;
+  };
+  // PH值计算  
+  float raw_ph = analogRead(PH_PIN) * 0.0048;  
+  currentData.ph = (raw_ph * ph_calib.ph_slope) + ph_calib.ph_offset;
+  // 电导率原始读数
+  float ecSum = 0;
+  enableECExcitation(true);  // 启动交流激励
+  for(int i=0; i<EC_CYCLES*2; i++){ 
+   delayMicroseconds(500000/EC_FREQ); 
+   int raw = analogRead(EC_PIN);
+   ecSum += (i%2 == 0) ? raw : -raw; // 差分采样
+  }
+  enableECExcitation(false); // 关闭激励
+  float ec_raw = ecSum / EC_CYCLES * 0.0042;  
+  // 温度补偿
+  float temp_comp = 1.0 + ec_calib.temp_coef*(currentData.temperature-25.0);
+  currentData.conductivity = (ec_raw * temp_comp) * ec_calib.ec_slope + ec_calib.ec_offset;
+  // TDS计算
+  currentData.tds = currentData.conductivity * TDS_FACTOR;
+  // 其他传感器
+  currentData.ammonia = readAnalog(AMMONIA_PIN, 0.0048, 0.12);
+  currentData.nitrate = readAnalog(NITRATE_PIN, 0.0019, 0.05);
+  currentData.nitrite = readAnalog(NITRITE_PIN, 0.0031, 0.08);
+  currentData.phosphate = readAnalog(PHOSPHATE_PIN, 0.0012, 0.03);
+  currentData.dissolved_oxygen = readAnalog(DO_PIN, 0.0025, 0.08);
+  currentData.orp = readAnalog(ORP_PIN, ORP_SCALE, ORP_OFFSET);
+  currentData.battery = readBattery();
+  safeDelay(100);
+  digitalWrite(SENSOR_POWER, LOW); // 采集完成后断电
+}
+
+// ==========================================
+// 数据处理（电导率报警逻辑）
+// ==========================================
+void processData() {
+  // 温度报警
+  if(currentData.temperature < 0 || currentData.temperature > 40) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    safeDelay(500);
+    delay(1000);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+  // 溶解氧补偿
+  float T = currentData.temperature; // 获取当前温度
+  float raw_do = readAnalog(DO_PIN, 0.0025, 0.08);
+  currentData.dissolved_oxygen = do_calib.a * raw_do + do_calib.b * T + do_calib.c;
+  // 电导率报警
+  if(currentData.conductivity < 200.0) {
+    triggerAlarm(LEVEL_WARNING, "Low EC!");
+  } else if(currentData.conductivity > 2000.0) {
+    triggerAlarm(LEVEL_URGENT, "High EC!");
+  }
+
+  // TDS报警
+  if(currentData.tds > 1000.0) {
+    triggerAlarm(LEVEL_WARNING, "TDS High!");
+  }
+
+  // CRC计算
+  uint8_t buffer[sizeof(currentData)-2];
+  memcpy(buffer, &currentData, sizeof(currentData)-2);
+  currentData.crc = crc16(buffer, sizeof(buffer));
+}
+
+// ==========================================
+// 无线传输（增加电导率传输）
+// ==========================================
+void wirelessTransmit() {
+  static uint32_t last_cloud = 0;    
+  static uint32_t last_lora = 0;        
+  // 更新云端数据（30秒间隔）    
+  if(esp_rmaker_is_connected() && (millis() - last_cloud > 30000)) {        
+    esp_rmaker_param_update_and_report( esp_rmaker_device_get_param_by_name(sensor_dev, "temperature"),esp_rmaker_float(currentData.temperature)); 
+    esp_rmaker_param_update_and_report( esp_rmaker_device_get_param_by_name(sensor_dev, "ph"),esp_rmaker_float(currentData.ph));        
+    last_cloud = millis();    
+  }        
+  // LoRa传输（5秒间隔，SPI安全）    
+  if(millis() - last_lora > 5000) {        
+    SPIBusGuard guard;        
+    if(LoRa.beginPacket()) {            
+      LoRa.write((uint8_t*)&currentData, sizeof(currentData));            
+      LoRa.endPacket(true); // 启用异步模式        
+    }        
+    last_lora = millis();    
+  }
+}
+// ==========================================
+// 显示更新（完整电导率显示）
+// ==========================================
+void updateDisplay() {
+  static uint32_t lastUpdate = 0;
+  if(millis() - lastUpdate < 500) return;
+  handlePaging();
+  hw.display.clearDisplay();
+  hw.display.setTextSize(1);
+  hw.display.setCursor(0,0);
+  // 分页指示器
+  hw.display.drawRoundRect(118, 0, 10, 64, 3, SSD1306_WHITE);
+  for(int i=0; i<4; i++) {
+    hw.display.fillCircle(123, 8 + i*16, (displayPage==i)?3:1, SSD1306_WHITE);
+  }
+
+  switch(displayPage) {
+    case 0:
+      hw.display.printf("EC:%.1fuS/cm\nTDS:%.0fppm\nTemp:%.1fC\npH:%.2f", 
+                       currentData.conductivity, currentData.tds,
+                       currentData.temperature, currentData.ph);
+      break;
+    case 1:
+      hw.display.printf("DO:%.1fmg/L\nNH3:%.2f\nNO3:%.2f\nNO2:%.2f",
+                       currentData.dissolved_oxygen, currentData.ammonia,
+                       currentData.nitrate, currentData.nitrite);
+      break;
+    case 2:
+      hw.display.printf("COD:%.1f\nChla:%.1f\nNTU:%.1f\nORP:%dmV",
+                       currentData.cod, currentData.chla,
+                       currentData.turbidity, (int)currentData.orp);
+      break;
+    case 3:
+      hw.display.printf("Batt:%.2fV\nRSSI:%d\nSD:%dMB\nUp:%.1fh",
+                       currentData.battery, LoRa.getRssi(),
+                       SD.cardSize()/(1024*1024), millis()/3600000.0);
+      break;
+  }
+  hw.display.display();
+  lastUpdate = millis();
+}
+
+// ==========================================
+// 数据存储（完整字段）
+// ==========================================
+void dataStorage() {
+  static uint32_t lastSave = 0;
+  if(millis() - lastSave < 300000) return;
+  for(int retry=0; retry<3; retry++) {
+  SPIBusGuard guard;
+  File file = SD.open("/data.csv", FILE_APPEND);
+  if(file) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+      "%lu,%.2f,%.2f,%.1f,%.3f,%.0f,%.2f,%.1f,%.2f,%.1f,%.3f,%.3f,%.3f,%.1f,%.0f,%.2f,%04X",
+      millis(), currentData.temperature, currentData.ph,
+      currentData.dissolved_oxygen, currentData.ammonia, currentData.orp,
+      currentData.salinity, currentData.cod, currentData.chla,
+      currentData.turbidity, currentData.nitrate, currentData.nitrite,
+      currentData.phosphate, currentData.conductivity, currentData.tds,
+      currentData.battery, currentData.crc
+    );
+   size_t written = file.println(buf);      
+   file.close();
+   if(written == strlen(buf)+1) { // 验证写入长度        
+   lastSave = millis();        
+   return; // 成功则退出      
+   }
+  }
+  safeDelay(1000 * retry); // 退避延时
+  }
+  if(DEBUG_MODE) Serial.println("SD Write Failed");
+}
+// ==========================================
+// 低功耗管理
+// ==========================================
+void enterDeepSleep() {
+  digitalWrite(SENSOR_POWER, LOW);
+  hw.display.ssd1306_command(SSD1306_DISPLAYOFF);
+  ledcWrite(1, 0); // 关闭PWM电源    
+  {SPIBusGuard guard; LoRa.sleep();}
+  SD.end();
+  hw.prefs.putUInt("sleepTime", millis());
+  esp_sleep_enable_timer_wakeup(300 * 1000000);
+  // 保存关键状态    
+  hw.prefs.putFloat("last_ph", currentData.ph);
+  esp_deep_sleep_start();
+}
+void manageWifiPower() {  
+  static bool wifiActive = false;    
+  if(millis() % 300000 < 5000){ // 每5分钟激活5秒    
+   if(!wifiActive){      
+     WiFi.reconnect();      
+     wifiActive = true;    
+    }  
+  } else {    
+    if(wifiActive){      
+      WiFi.disconnect();      
+      wifiActive = false;    
+    }  
+  }
+}
+// ==========================================
+// CRC校验
+// ==========================================
+uint16_t crc16(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for(size_t i=0; i<len; i++) {
+    crc ^= (uint16_t)data[i] << 8;
+    for(int j=0; j<8; j++) {
+      crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+    }
+  }
+  return crc;
+}
+
+// ==========================================
+// 改进功能模块
+// ==========================================
+// 分页控制
+void handlePaging() {
+  static uint32_t lastPress = 0;
+  const uint8_t DEBOUNCE_DELAY = 50;
+
+  auto checkButton = [](uint8_t pin) {
+    static bool lastState = HIGH;
+    bool currentState = digitalRead(pin);
+    
+    if(currentState != lastState) {
+      delay(DEBOUNCE_DELAY);
+      currentState = digitalRead(pin);
+      lastState = currentState;
+    }
+    return (currentState == LOW);
+  };
+
+  if(millis() - lastPress > 500) {
+    if(checkButton(BTN_PREV)) {
+      displayPage = (displayPage + 3) % 4;
+      lastPress = millis();
+    }
+    if(checkButton(BTN_NEXT)) {
+      displayPage = (displayPage + 1) % 4;
+      lastPress = millis();
+    }
+  }
+}
+
+// 传感器自检（新增电导率检测）
+SensorFault sensorSelfTest() {
+  // 温度传感器
+  if(!hw.tempSensor.getAddress(0)) return FAULT_TEMP_SENSOR;
+  // 光谱传感器
+  if(!hw.as7341.begin() || hw.as7341.getVersion() != 0x24) return FAULT_SPECTRAL_SENSOR;
+  uint16_t spectral_data[10];
+  hw.as7341.readAllChannels(spectral_data);
+  if((spectral_data[0] == 0 && spectral_data[5] == 0)||(spectral_data[3] + spectral_data[7] < 100)) // 检查特定波段  (430-810nm)
+  return FAULT_SPECTRAL_SENSOR;
+  // 溶解氧检测  
+  if(analogRead(DO_PIN) < 50 || analogRead(DO_PIN) > 3000) return FAULT_ION_SENSOR;
+  // pH传感器基础信号检测  
+  if(analogRead(PH_PIN) < 50 || analogRead(PH_PIN) > 3000) return FAULT_PH_SENSOR;
+  // 电导率基础检测
+  if(analogRead(EC_PIN) < 50 || analogRead(EC_PIN) > 3000)  return FAULT_EC_SENSOR;
+  // ORP检测  
+  if(analogRead(ORP_PIN) < 50 || analogRead(ORP_PIN) > 3000) return FAULT_ION_SENSOR;    
+  // 磷酸盐检测  
+  if(analogRead(PHOSPHATE_PIN) < 50 || analogRead(PHOSPHATE_PIN) > 3000)  return FAULT_ION_SENSOR;
+  // 硝酸盐/亚硝酸盐信号检测
+  if(analogRead(NITRATE_PIN) < 50 || analogRead(NITRATE_PIN) > 3000)  return FAULT_ION_SENSOR;
+  if(analogRead(NITRITE_PIN) < 50 || analogRead(NITRITE_PIN) > 3000)  return FAULT_ION_SENSOR;
+  //模拟信号
+  const uint8_t analog_pins[] = {DO_PIN, PH_PIN, EC_PIN, NITRATE_PIN, NITRITE_PIN};  
+  for(auto pin : analog_pins){    
+    int val = analogRead(pin);    
+    if(val < 50 || val > 3000) {  // 检测信号是否在合理范围      
+    if(pin == PH_PIN) return FAULT_PH_SENSOR;      
+    if(pin == EC_PIN) return FAULT_EC_SENSOR;      
+    return FAULT_ION_SENSOR;    
+    }  
+  }
+  return FAULT_NONE;
+}
+
+void showFaultIndicator(SensorFault fault) {
+  hw.display.clearDisplay();
+  hw.display.setCursor(0,0);
+  switch(fault) {
+    case FAULT_TEMP_SENSOR:
+      hw.display.println("E01:Temp Sensor");
+      hw.display.println("Check wiring");
+      break;
+    case FAULT_SPECTRAL_SENSOR:
+      hw.display.println("E02:Spect Sensor");
+      hw.display.println("Restart device");
+      break;
+    case FAULT_PH_SENSOR:
+      hw.display.println("E03:pH Sensor");
+      hw.display.println("Check electrode");
+      break;
+    default: return;
+  }
+  
+  hw.display.display();
+  while(1) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(500);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(1500);
+  }
+}
+
+// 报警系统
+void triggerAlarm(AlarmLevel level, const char* message = nullptr) {
+  if(alarmMuted) return;
+  if(!alarmState.active){
+    alarmState.active = true;
+    alarmState.level = level;
+    alarmState.message = message ? String(message) : "";
+    alarmState.patternStart = millis();
+    alarmState.beepCount = 0;
+    digitalWrite(LED_PIN, HIGH);
+    if(message) {
+      hw.display.clearDisplay();
+      hw.display.setCursor(0,0);
+      hw.display.println(message);
+      hw.display.display();
+    }
+  }
+      alarmMuted = true;
+}
+void handleAlarm() {
+  if(!alarmState.active) return;
+
+  uint32_t elapsed = millis() - alarmState.patternStart;
+  
+  switch(alarmState.level) {
+    case LEVEL_INFO:
+      if(elapsed > 1000) {
+        digitalWrite(BUZZER_PIN, LOW);
+        alarmState.active = false;
+      } else {
+        digitalWrite(BUZZER_PIN, HIGH);
+      }
+      break;
+    case LEVEL_WARNING:
+      if(alarmState.beepCount < 3) {
+        if(elapsed % 500 < 200) {
+          digitalWrite(BUZZER_PIN, HIGH);
+        } else {
+          digitalWrite(BUZZER_PIN, LOW);
+          if(elapsed % 500 > 400) alarmState.beepCount++;
+        }
+      } else {
+        alarmState.active = false;
+      }
+      break;
+    case LEVEL_URGENT:
+      for(int i=0; i<5; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(500);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(200);
+      }
+      break;
+    case LEVEL_CRITICAL:
+      if(millis() - alarmState.patternStart > 30000){ // 30秒后自动静音
+        alarmMuted = true;
+        digitalWrite(BUZZER_PIN, LOW);
+      } else {
+        digitalWrite(BUZZER_PIN, (millis()%1500 < 1000));
+      }
+      break;
+    }
+  if((alarmMuted && digitalRead(BTN_NEXT))||(alarmState.active && (millis() - alarmState.patternStart > 30000))) {
+    alarmState.active = false;
+    alarmMuted = false;
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_PIN, LOW);
+  }
+}
+//自检
+void handlePHCalibration(float reference) {  
+  float slope = reference / (analogRead(PH_PIN) * 0.0048);  
+  hw.prefs.putFloat("ph_slope", slope);} 
+void handleECCalibration(float reference) {  
+  ec_calib.scale = reference / currentData.conductivity;  saveCalibration();}
+// ==========================================
+// 主程序
+// ==========================================
+void setup() {
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();   
+  if(cause != ESP_SLEEP_WAKEUP_UNDEFINED) {        // 唤醒后需要重新初始化的设备 
+    Wire.begin(OLED_SDA, OLED_SCL);        
+    SPI.begin();        initSensors();        
+    hw.tempSensor.begin(); // 温度传感器需要特别处理        
+    hw.display.begin(SSD1306_SWITCHCAPVCC, 0x3C);    
+  }
+  Serial.begin(115200);
+  ledcSetup(0, 1000, 8); // 1kHz PWM
+  ledcAttachPin(EC_DRIVE_PIN, 0);
+  // 传感器自检
+  SensorFault fault = sensorSelfTest();
+  if(fault != FAULT_NONE) showFaultIndicator(fault);
+  // 初始化流程
+  initHardware();
+  initSensors();
+  initWireless();
+  initDisplay();
+  SPI.begin();
+  if(!SD.begin(SD_CS) && DEBUG_MODE) {
+    Serial.println("SD Card Fail");
+  }
+  pinMode(EC_DRIVE_PIN, OUTPUT);
+  ledcWrite(2, 0); // 确保初始状态为关闭
+  Serial.println("[INFO] EC激励引脚初始化完成");
+  // OTA服务  
+  esp_rmaker_ota_config_t ota_config = {        
+    .server_cert = ESP_RMAKER_OTA_DEFAULT_SERVER_CERT,        
+    .enable_ssl = true    
+  };    
+  esp_rmaker_ota_enable(&ota_config, OTA_USING_PARAMS);
+  // 蓝牙校准指令处理
+  hw.SerialBT.onDataReceived([](String cmd) {     
+    if(cmd.startsWith("CALIB")) {    // 统一错误处理    
+    auto sendError = [](const String& msg) {      
+      hw.SerialBT.println("ERR: " + msg);    
+    };     // 指令解析
+    // 增加安全校验（在命令解析前添加）    
+    if(cmd.length() > 50) {        
+      hw.SerialBT.println("ERR:CMD_TOO_LONG");        
+      return;    
+    }        
+    static bool calibrating = false; // 防止重入锁    
+    if(calibrating) {       
+      hw.SerialBT.println("ERR:ALREADY_CALIBRATING");        
+      return;    
+    }    
+    calibrating = true;
+    // 格式: CALIB [PH/EC] [LOW/HIGH]:参考值    
+    int space1 = cmd.indexOf(' ');    
+    int space2 = cmd.indexOf(' ', space1+1);    
+    int colon = cmd.indexOf(':', space2+1);        // 基础格式检查    
+    if(space1 == -1 || space2 == -1 || colon == -1){      
+      sendError("格式错误，示例:CALIB PH LOW:4.0");      
+      return;    
+    }     // 参数提取    
+    String sensorType = cmd.substring(space1+1, space2);    
+    String calibPoint = cmd.substring(space2+1, colon);    
+    float refValue = cmd.substring(colon+1).toFloat();        
+    // 传感器类型    
+    sensorType.toUpperCase();    
+    if(sensorType != "PH" && sensorType != "EC"){      
+      sendError("只支持PH/EC传感器");      
+      return;    
+    }     // 校准点    
+    calibPoint.toUpperCase();    
+    if(calibPoint != "LOW" && calibPoint != "HIGH"){      
+      sendError("校准点需为LOW/HIGH");      
+      return;    
+    }     // 温度检查（PH:15-35℃, EC:20-30℃）    
+    float currentTemp = currentData.temperature;    
+    if(sensorType == "PH" && (currentTemp <15 || currentTemp >35)){      
+      sendError("PH校准需15-35℃环境");      
+      return;    
+    }    
+    if(sensorType == "EC" && (currentTemp <20 || currentTemp >30)){      
+      sendError("EC校准需20-30℃环境");      
+      return;    
+    }     // 信号稳定性检测（10次采样波动<5%） 
+    auto checkStability = [](uint8_t pin) -> bool {      
+      const int samples = 10;      
+      float minV=4096, maxV=0, sum=0;      
+      for(int i=0; i<samples; i++){        
+        float v = analogRead(pin);        
+        minV = min(minV, v);        maxV = max(maxV, v);        
+        sum += v;        safeDelay(50);     
+      }      
+      float avg = sum/samples;      
+      return (maxV - minV) < (avg * 0.05);     
+    };     
+    uint8_t targetPin = (sensorType == "PH") ? PH_PIN : EC_PIN;    
+    if(!checkStability(targetPin)){      
+      sendError("信号波动过大，请稳定传感器");      
+      return;    
+    }     // 参考值有效性    
+    if(refValue <=0){      
+      sendError("参考值必须大于0");      
+      return;    
+    }     // 执行校准
+    if(sensorType == "PH"){      
+      float avgVoltage = analogRead(PH_PIN) * 0.0048;            
+      if(calibPoint == "LOW"){        
+        ph_calib.ph_low_ref = refValue;        
+        ph_calib.ph_offset = refValue - (avgVoltage * ph_calib.ph_slope);      
+      } else {        
+        ph_calib.ph_high_ref = refValue;        
+        ph_calib.ph_slope = (refValue - ph_calib.ph_low_ref)/(avgVoltage - (ph_calib.ph_low_ref/ph_calib.ph_slope));    
+      }      
+      saveCalibration();      
+      hw.SerialBT.println("PH_CALIB_OK");    
+    } else {      // EC校准需读取当前电导率      
+      readSensors(); // 确保数据最新            
+      if(calibPoint == "LOW"){        
+        ec_calib.ec_low_ref = refValue;        
+        ec_calib.ec_offset = refValue - currentData.conductivity;      
+      } else {        
+        ec_calib.ec_high_ref = refValue;        
+        ec_calib.ec_slope = (refValue - ec_calib.ec_low_ref) /(currentData.conductivity - ec_calib.ec_low_ref);     
+      }      
+      saveCalibration();      
+      hw.SerialBT.println("EC_CALIB_OK");    
+    } 
+    calibrating = false; 
+    }
+  });
+  if(DEBUG_MODE) {    // 打印所有校准参数    
+  Serial.println("\n=== 引脚分配验证 ===");  
+  Serial.printf("pH传感器: GPIO%d\n", PH_PIN);  
+  Serial.printf("溶解氧传感器: GPIO%d\n", DO_PIN);  
+  Serial.printf("电导率传感器: GPIO%d\n", EC_PIN);  
+  Serial.printf("电池检测: GPIO%d\n", BAT_PIN);
+  Serial.println("\n=== 校准参数 ===");    
+  Serial.printf("DO: a=%.4f b=%.4f c=%.4f\n", do_calib.a, do_calib.b, do_calib.c);    
+  Serial.printf("Turb: slope=%.2f offset=%.1f\n", turb_calib.slope, turb_calib.offset);
+  Serial.printf("EC: scale=%.2f temp_coef=%.4f\n", ec_calib.scale, ec_calib.temp_coef);     // 校准验证（需在传感器初始化后执行）    
+  Serial.println("\n=== 校准验证 ===");   
+  hw.tempSensor.requestTemperatures(); // 强制刷新温度    readSensors(); // 获取最新数据        
+  Serial.printf("温度传感器：%.1f°C (预期25±2°C)\n", currentData.temperature);    
+  Serial.printf("pH中性点:%.2f (预期7.00±0.3)\n", currentData.ph);    
+  Serial.printf("电导率基准：%.1fμS/cm (预期1413±50)\n", currentData.conductivity);     // 非阻塞式校准检查    
+  if(abs(currentData.ph - 7.0) > 0.5 || abs(currentData.conductivity - 1413) > 100) {      
+    Serial.println("\n !校准异常！请依次执行：");      
+    Serial.println("1. 将pH探头放入7.0标准液，发送 CALIB_PH 7.0");      
+    Serial.println("2. 将EC探头放入1413μS/cm标准液,发送 CALIB_EC 1413");      
+    Serial.println("3. 发送 RESUME 继续运行喵");            
+    while(Serial.available()) Serial.read(); // 清空缓冲区      
+    while(1) {        
+      if(Serial.available()) {          
+        String cmd = Serial.readStringUntil('\n');          
+        cmd.trim();          
+        if(cmd.startsWith("CALIB_PH")) handlePHCalibration(cmd);          
+        else if(cmd.startsWith("CALIB_EC")) handleECCalibration(cmd);          
+        else if(cmd == "RESUME") break;        
+      }        
+      delay(100);      
+    }      
+    Serial.println("校准验证通过,系统继续运行ing...");    
+  }  
+  // 增强传感器稳定性  
+  hw.tempSensor.requestTemperatures();  
+  delay(800); // 确保温度转换完成  
+  readSensors();   // 动态阈值计算  
+  const float TEMP_TOLERANCE = 2.0;  
+  const float PH_TOLERANCE = 0.3;  
+  const float EC_TOLERANCE = 50.0;    
+  bool temp_ok = abs(currentData.temperature - 25.0) <= TEMP_TOLERANCE;  
+  bool ph_ok = abs(currentData.ph - 7.0) <= PH_TOLERANCE;  
+  bool ec_ok = abs(currentData.conductivity - 1413) <= EC_TOLERANCE;   
+  if(!temp_ok || !ph_ok || !ec_ok) {    // 分项错误提示    
+  if(!temp_ok) Serial.printf("温度异常: %.1f℃ (允许25±2℃)\n", currentData.temperature);    
+  if(!ph_ok) Serial.printf("pH异常: %.2f (允许7.0±0.3)\n", currentData.ph);    
+  if(!ec_ok) Serial.printf("电导率异常: %.0fμS/cm (允许1413±50)\n", currentData.conductivity);     // 增强型超时处理    
+  unsigned long start = millis();    const unsigned long TIMEOUT = 300000; // 5分钟    bool resolved = false;        
+  while(!resolved && (millis()-start < TIMEOUT)) {      
+    Serial.printf("\r等待校准指令 [剩余%02d:%02d]...", (TIMEOUT - (millis()-start))/60000, ((TIMEOUT - (millis()-start))%60000)/1000);            
+    if(Serial.available()) {        
+      String cmd = Serial.readStringUntil('\n');        
+      cmd.trim();                // 容错命令解析        
+      if(cmd.startsWith("CALIB_PH") || cmd.startsWith("CALIB_EC")) {          
+        int spaceIndex = cmd.indexOf(' ');          
+        if(spaceIndex != -1) {            
+          float ref = cmd.substring(spaceIndex+1).toFloat();            
+          if(cmd.startsWith("CALIB_PH")) calibratePH(ref);            
+          else calibrateEC(ref);            
+          resolved = true;          
+        }        
+      }else if(cmd == "RESUME") {          
+        resolved = true;        
+      }      
+    }      
+    delay(50);    
+  }     
+  if(!resolved) {      
+    Serial.println("\n⏰ 超时自动恢复默认参数");      
+    loadDefaultCalibration();      
+    saveCalibration();      
+    readSensors(); // 验证恢复效果      
+    Serial.printf("恢复后状态: pH=%.2f EC=%.0f\n", currentData.ph, currentData.conductivity);    
+  }  
+  }
+  }
+}
+void loop() {
+  feedWatchdog();
+  readSensors();
+  processData();
+  // 动态报警
+  if(currentData.dissolved_oxygen < 3.0) {
+    triggerAlarm(LEVEL_URGENT, "Low Oxygen!");
+  }
+  handleAlarm();
+  wirelessTransmit();
+  updateDisplay();
+  dataStorage();
+  if(currentData.battery < LOW_VOLTAGE) {
+    triggerAlarm(LEVEL_CRITICAL, "Low Battery!");
+    enterDeepSleep();
+  }
+  delay(1000);
+}
