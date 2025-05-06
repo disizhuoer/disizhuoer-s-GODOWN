@@ -1,0 +1,1052 @@
+下面是全局程序#pragma once
+#include <Arduino.h>
+// 硬件配置
+#define DEBUG_MODE true
+#define LORA_BAND 433.0E6
+#define LOW_VOLTAGE 3.2
+#define SD_CS 5
+#define SD_FILE_NAME "/sensor.csv"
+#define ENCRYPT_KEY "A1B2C3D4E5F6H7I8" // 16字节AES密钥
+#define DATA_FILE_BASE "/data"         // 数据文件前缀
+#define MAX_FILE_SIZE 102400           // 单个文件最大100KB
+#define MAX_FILES 10                   // 最大文件数
+#define BAT_DIVIDER 2.0
+#define PH_CAL_SLOPE 0.03
+#define ORP_CAL_SLOPE 2.5
+#define ORP_SCALE 0.004
+#define ORP_OFFSET 0.12
+#define EC_CAL_REF 1413.0  // 电导率校准基准
+#define TDS_FACTOR 0.65    // TDS转换系数
+#define SAMPLE_AVG_TIMES 16
+#define CALIBRATION_FLAG 0x55AA
+#define EEPROM_SIZE 64
+// 电源软启动参数
+#define SOFT_START_TIME 2000  // 软启动时长(ms)
+#define PWM_RESOLUTION 8      // PWM分辨率
+#define PWM_FREQ 1000         // PWM频率
+// 传感器重试参数
+#define MAX_RETRIES 3
+#define RETRY_DELAY 500
+// 电导率交流激励参数
+#define EC_FREQ 1000    // 1kHz方波
+#define EC_DUTY 128     // 50%占空比
+#define EC_CYCLES 10    // 采样周期数
+// OLED图形元素定义
+#define WARNING_ICON_WIDTH 16
+#define WARNING_ICON_HEIGHT 16
+const unsigned char PROGMEM warning_icon[] = {  0x00,0x00,0x03,0xC0,0x07,0xE0,0x0E,0x70,0x1C,0x38,0x18,0x18,0x30,0x0C,0x30,0x0C,  0x30,0x0C,0x30,0x0C,0x18,0x18,0x1E,0x78,0x0F,0xF0,0x03,0xC0,0x00,0x00,0x00,0x00};
+// 通信协议启用开关
+#define USE_LORA 1
+#define USE_BLE 1
+#define USE_WIFI 1
+#define USE_RAINMAKER 1
+#define USE_SERIAL 1 
+// 硬件引脚配置
+constexpr uint8_t LORA_CS = 18;
+constexpr uint8_t LORA_RST = 14;
+constexpr uint8_t LORA_DIO0 = 26; 
+// WiFi凭证
+constexpr const char* WIFI_SSID = "YourSSID";
+constexpr const char* WIFI_PASS = "YourPassword"; 
+// 质量监控参数
+constexpr uint16_t STATS_WINDOW_SIZE = 100; // 统计窗口大小
+// 通信协议
+enum Protocol {
+    PROTO_BLUETOOTH,
+    PROTO_WIFI,
+    PROTO_LORA
+};
+// 系统参数
+constexpr float LOW_VOLTAGE = 3.3;
+constexpr uint16_t WDT_TIMEOUT = 30; // 看门狗超时（秒）     下面是通讯协议程序#pragma once
+#include <vector>
+#include "Config.h"
+
+struct CommStats {
+    float rssi = -999;
+    float snr = 0;
+    uint32_t txCount = 0;
+    uint32_t txSuccess = 0;
+    uint32_t txFailed = 0;
+    uint32_t lastTxTime = 0;
+};
+class CommInterface {
+public:
+    virtual bool begin() = 0;
+    virtual bool send(const uint8_t* data, size_t len) = 0;
+    virtual void update() =0; // 协议维护
+    
+    // 质量监控
+    virtual CommStats getStats() const = 0;
+    virtual String getStatusLine() const = 0;
+    virtual const uint8_t* getIcon() const = 0;
+    
+    // 动态控制
+    virtual void enable(bool state) { enabled = state; }
+    virtual bool isEnabled() const { return enabled; }
+
+protected:
+    bool enabled = true;
+};       下面是通讯管理程序#pragma once
+#include <vector>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include "CommInterface.h"
+#include "Config.h"
+#include <mbedtls/aes.h>
+class CommManager : public CommInterface {
+public:
+    enum Protocol {
+        PROTO_BLUETOOTH,
+        PROTO_LORA,
+        PROTO_WIFI,
+        PROTO_SERIAL,
+        PROTO_TCP_DIRECT
+    };
+    explicit CommManager(Protocol initial = PROTO_BLUETOOTH):currentProtocol(initial) {}
+    bool begin() override {
+        disableAll();
+        switch(currentProtocol) {
+            case PROTO_BLUETOOTH:
+                if(!bt.begin(DEVICE_NAME)) return false;
+                break;
+            case PROTO_LORA:
+                LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+                if(!LoRa.begin(LORA_FREQ)) return false;
+                LoRa.setSyncWord(0x12);  // 设置同步字防干扰
+                break;
+            case PROTO_WIFI:
+                if(WiFi.begin(WIFI_SSID, WIFI_PASS) != WL_CONNECTED) {
+                    return false;
+                }
+                break;
+            case PROTO_SERIAL:
+                Serial.begin(SERIAL_BAUD);
+                break;
+            case PROTO_TCP_DIRECT:
+                if(!setupAPMode()) return false;
+                tcpServer.begin(TCP_PORT);
+                break;
+        }
+        return true;
+    }
+
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled) return false;
+
+        Packet packet = buildPacket(data, len);
+        
+        if(encryptionEnabled) {
+            encryptPacket(packet);
+        }
+
+        bool success = false;
+        switch(currentProtocol) {
+            case PROTO_BLUETOOTH:
+                success = bt.write(packet.raw, packet.totalLen) == packet.totalLen;
+                break;
+            case PROTO_LORA:
+                LoRa.beginPacket();
+                LoRa.write(packet.raw, packet.totalLen);
+                success = LoRa.endPacket(true); // 异步模式
+                break;
+            case PROTO_WIFI:
+                success = sendViaWiFi(packet);
+                break;
+            case PROTO_SERIAL:
+                success = Serial.write(packet.raw, packet.totalLen) == packet.totalLen;
+                break;
+            case PROTO_TCP_DIRECT:
+                success = sendViaTCP(packet);
+                break;
+        }
+        updateStats(success);
+        return success;
+    }
+    void setProtocol(Protocol proto) {
+        if(currentProtocol == proto) return;
+        currentProtocol = proto;
+        begin();
+    }
+    String getStatusLine() const override {
+        switch(currentProtocol) {
+            case PROTO_BLUETOOTH:
+                return "BT: " + String(bt.connected() ? "Connected" : "Available");
+            case PROTO_LORA:
+                return "LoRa: " + String(LoRa.getRssi()) + "dBm";
+            case PROTO_WIFI:
+                return WiFi.status() == WL_CONNECTED ? 
+                    "WiFi: " + WiFi.localIP().toString() : "WiFi Disconnected";
+            case PROTO_SERIAL:
+                return "Serial: " + String(SERIAL_BAUD/1000) + "kbps";
+            case PROTO_TCP_DIRECT:
+                return tcpClient.connected() ? 
+                    "TCP: " + tcpClient.remoteIP().toString() : "TCP Listening";
+        }
+        return "Unknown";
+    }
+private:
+    Protocol currentProtocol;
+    BluetoothSerial bt;
+    WiFiServer tcpServer;
+    WiFiClient tcpClient;
+
+    struct Packet {
+        #pragma pack(push, 1)
+        struct Header {
+            uint8_t startFlag = 0xAA;
+            uint16_t payloadLength;
+            uint8_t protocolVersion = 0x01;
+        };
+        #pragma pack(pop)
+        
+        Header header;
+        uint8_t* payload;
+        uint16_t crc;
+        uint8_t endFlag = 0x55;
+        uint8_t* raw;
+        size_t totalLen;
+
+        Packet(const uint8_t* data, size_t len) {
+            header.payloadLength = len;
+            payload = new uint8_t[len];
+            memcpy(payload, data, len);
+            
+            // 计算包含协议头的CRC
+            crc = calculateCRC(reinterpret_cast<uint8_t*>(&header), sizeof(Header), data, len);
+            
+            // 组装完整数据包
+            totalLen = sizeof(Header) + len + sizeof(crc) + 1;
+            raw = new uint8_t[totalLen];
+            uint8_t* ptr = raw;
+            
+            // 填充头
+            memcpy(ptr, &header, sizeof(Header));
+            ptr += sizeof(Header);
+            
+            // 填充数据
+            memcpy(ptr, payload, len);
+            ptr += len;
+            
+            // 填充CRC
+            *reinterpret_cast<uint16_t*>(ptr) = crc;
+            ptr += sizeof(crc);
+            
+            // 结束符
+            *ptr = endFlag;
+        }
+
+        ~Packet() {
+            delete[] payload;
+            delete[] raw;
+        }
+
+    private:
+        uint16_t calculateCRC(const uint8_t* header, size_t headerLen, 
+                             const uint8_t* payload, size_t payloadLen) {
+            uint16_t crc = 0xFFFF;
+            
+            // 计算头CRC
+            for(size_t i=0; i<headerLen; ++i) {
+                crc ^= (uint16_t)header[i] << 8;
+                for(int j=0; j<8; ++j) {
+                    crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+                }
+            }
+            
+            // 计算数据CRC
+            for(size_t i=0; i<payloadLen; ++i) {
+                crc ^= (uint16_t)payload[i] << 8;
+                for(int j=0; j<8; ++j) {
+                    crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+                }
+            }
+            return crc;
+        }
+    };
+
+    Packet buildPacket(const uint8_t* data, size_t len) {
+        return Packet(data, len);
+    }
+
+    void encryptPacket(Packet& packet) {
+        mbedtls_aes_context aes;
+        mbedtls_aes_init(&aes);
+        mbedtls_aes_setkey_enc(&aes, ENCRYPT_KEY, 128);
+        size_t encryptedLen = ((packet.header.payloadLength + 15) / 16) * 16; // 对齐块大小
+        uint8_t* encrypted = new uint8_t[encryptedLen];
+        // AES-CBC模式加密
+        uint8_t iv[16] = {0};
+        esp_fill_random(iv, 16);
+        memcpy(packet.raw, iv, 16);
+        // 加密数据
+        size_t encryptedLen = ((packet.header.payloadLength + 15)/16)*16;
+        mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, encryptedLen, iv,packet.payload, packet.payload);
+        // 更新数据包长度
+        packet.header.payloadLength = encryptedLen;
+        packet.totalLen += 16; // 增加IV长度
+        mbedtls_aes_free(&aes);
+    }
+
+    bool setupAPMode() {
+        return WiFi.softAP(AP_SSID, AP_PASS);
+    }
+
+    bool sendViaTCP(const Packet& packet) {
+        if(!tcpClient.connected()) {
+            tcpClient = tcpServer.available();
+            if(!tcpClient) return false;
+        }
+        return tcpClient.write(packet.raw, packet.totalLen) == packet.totalLen;
+    }
+
+    bool sendViaWiFi(const Packet& packet) {
+        if(WiFi.status() != WL_CONNECTED) return false;
+        
+        WiFiClient client;
+        if(!client.connect(SERVER_IP, SERVER_PORT)) return false;
+        
+        client.write(packet.raw, packet.totalLen);
+        client.stop();
+        return true;
+    }
+
+    void disableAll() {
+        bt.end();
+        LoRa.end();
+        WiFi.disconnect(true);
+        tcpServer.close();
+    }
+
+    void updateStats(bool success) {
+        // 统计代码...
+    }
+};            下面是通讯管理LoRa#include <LoRa.h>
+#include "CommInterface.h"
+#include <LoRa.h>
+class LoRaComm : public CommInterface {
+public:
+    LoRaComm(float freq = 433.0E6) : frequency(freq) {}
+
+    bool begin() override {
+        if(!LoRa.begin(frequency)) return false;
+        LoRa.setSpreadingFactor(12);
+        LoRa.setSyncWord(0x12);
+        return true;
+    }
+
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled) return false;
+        
+        LoRa.beginPacket();
+        LoRa.write(data, len);
+        bool success = LoRa.endPacket() > 0;
+        
+        updateStats(success);
+        return success;
+    }
+
+    CommStats getStats() const override {
+        CommStats stats;
+        stats.rssi = LoRa.packetRssi();
+        stats.snr = LoRa.packetSnr();
+        stats.txCount = txCount;
+        stats.txSuccess = txSuccess;
+        stats.txFailed = txFailed;
+        return stats;
+    }
+
+    String getStatusLine() const override {
+        return "LoRa "+String(LoRa.getRssi(),0)+"dBm "+String(getSuccessRate()*100,1)+"%";
+    }
+
+private:
+    float frequency;
+    uint32_t txCount = 0;
+    uint32_t txSuccess = 0;
+    uint32_t txFailed = 0;
+
+    void updateStats(bool success) {
+        txCount++;
+        if(success) txSuccess++;
+        else txFailed++;
+        
+        // 滑动窗口
+        if(txCount > STATS_WINDOW_SIZE) {
+            txCount = STATS_WINDOW_SIZE;
+            txSuccess = txSuccess * (STATS_WINDOW_SIZE-1)/STATS_WINDOW_SIZE;
+            txFailed = txFailed * (STATS_WINDOW_SIZE-1)/STATS_WINDOW_SIZE;
+        }
+    }
+
+    float getSuccessRate() const {
+        if(txCount == 0) return 0;
+        return (float)txSuccess / (txSuccess + txFailed);
+    }
+};下面是通讯管理蓝牙程序#pragma once
+#include <BLEDevice.h>
+#include "CommInterface.h"      
+
+class BLEComm : public CommInterface {
+public:
+    BLEComm(const char* deviceName = "WaterMonitor", 
+           const char* serviceUUID = "0000ABCD-0000-1000-8000-00805F9B34FB",
+           const char* charUUID = "0000ABCE-0000-1000-8000-00805F9B34FB")
+        : deviceName(deviceName), 
+          serviceUUID(serviceUUID),
+          charUUID(charUUID) {}
+
+    bool begin() override {
+        if(!BLEDevice::getInitialized()) {
+            BLEDevice::init(deviceName);
+        }
+        
+        server = BLEDevice::createServer();
+        server->setCallbacks(new BLEServerCallbacks(*this));
+        
+        service = server->createService(serviceUUID);
+        characteristic = service->createCharacteristic(
+            charUUID,
+            BLECharacteristic::PROPERTY_READ |
+            BLECharacteristic::PROPERTY_WRITE |
+            BLECharacteristic::PROPERTY_NOTIFY
+        );
+        
+        service->start();
+        startAdvertising();
+        return true;
+    }
+
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled || !isConnected()) {
+            stats.txFailed++;
+            return false;
+        }
+        
+        characteristic->setValue(data, len);
+        characteristic->notify();
+        stats.txSuccess++;
+        stats.txCount++;
+        return true;
+    }
+
+    void update() override {
+        if(!isConnected() && millis() - lastAdvTime > 30000) {
+            startAdvertising();
+        }
+    }
+
+    CommStats getStats() const override {
+        CommStats s = stats;
+        s.rssi = BLEDevice::getRssi();
+        return s;
+    }
+
+    String getStatusLine() const override {
+        return String("BLE ") + 
+               (isConnected() ? String(BLEDevice::getRssi())+"dBm" : "Disconnected") +
+               " " + String(stats.getSuccessRate()*100, 1) + "%";
+    }
+
+    const uint8_t* getIcon() const override {
+        static const uint8_t BLE_ICON[] = { /* 16x16图标数据 */ };
+        return BLE_ICON;
+    }
+
+    bool isConnected() const {
+        return connectedCount > 0;
+    }
+
+private:
+    const char* deviceName;
+    const char* serviceUUID;
+    const char* charUUID;
+    BLEServer* server = nullptr;
+    BLEService* service = nullptr;
+    BLECharacteristic* characteristic = nullptr;
+    uint32_t lastAdvTime = 0;
+    uint32_t connectedCount = 0;
+
+    void startAdvertising() {
+        BLEAdvertising* advertising = server->getAdvertising();
+        advertising->start();
+        lastAdvTime = millis();
+    }
+
+    class BLEServerCallbacks : public BLEServerCallbacks {
+    public:
+        BLEServerCallbacks(BLEComm& parent) : parent(parent) {}
+        
+        void onConnect(BLEServer* pServer) {
+            parent.connectedCount++;
+        }
+
+        void onDisconnect(BLEServer* pServer) {
+            parent.connectedCount--;
+        }
+        
+    private:
+        BLEComm& parent;
+    };
+};下面是通讯wifi程序#pragma once
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "CommInterface.h"
+
+class WiFiComm : public CommInterface {
+public:
+    WiFiComm(const char* ssid, const char* pass, const char* server,
+            uint16_t connectTimeout = 30,   // 连接超时（秒）
+            uint8_t maxRetries = 3)         // 最大重试次数
+        : ssid(ssid), 
+          password(pass),
+          serverUrl(server),
+          connectTimeout(connectTimeout * 1000),
+          maxRetries(maxRetries) {}
+
+    bool begin() override {
+        if(!enabled) return false;
+        
+        connectionAttempts = 0;
+        lastConnectTime = 0;
+        return attemptConnect();
+    }
+
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled || !isConnected()) {
+            stats.txFailed++;
+            return false;
+        }
+
+        HTTPClient http;
+        bool success = false;
+        uint8_t retryCount = 0;
+        
+        while(retryCount <= maxRetries) {
+            http.begin(serverUrl);
+            http.addHeader("Content-Type", "application/octet-stream");
+            int httpCode = http.POST(data, len);
+            
+            if(httpCode == HTTP_CODE_OK) {
+                success = true;
+                stats.lastSuccessTime = millis();
+                break;
+            } else {
+                recordHttpError(httpCode);
+                retryCount++;
+            }
+            
+            http.end();
+            delay(100 * retryCount); // 退避延时
+        }
+
+        updateStats(success);
+        return success;
+    }
+
+    void update() override {
+        if(!enabled) return;
+        
+        // 维持连接状态
+        if(!isConnected() && millis() - lastConnectTime > reconnectInterval) {
+            attemptConnect();
+        }
+        
+        // 更新信号强度
+        if(isConnected()) {
+            stats.rssi = WiFi.RSSI();
+        }
+    }
+
+    CommStats getStats() const override {
+        CommStats s = stats;
+        s.connected = isConnected();
+        s.lastActivity = max(stats.lastSuccessTime, lastConnectTime);
+        return s;
+    }
+
+    String getStatusLine() const override {
+        String status;
+        if(isConnected()) {
+            status = "WiFi " + String(stats.rssi) + "dBm";
+            status += " " + String(stats.getSuccessRate() * 100, 1) + "%";
+            status += " Retry:" + String(connectionAttempts);
+        } else {
+            status = "WiFi Disconnected";
+        }
+        return status;
+    }
+
+    const uint8_t* getIcon() const override {
+        static const uint8_t WIFI_ICON[] = { 
+            // 16x16 WiFi图标数据
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0xF0,
+            0x38, 0x1C, 0x60, 0x06, 0x43, 0xC2, 0x0C, 0x30,
+            0x10, 0x08, 0x23, 0xC4, 0x40, 0x02, 0x40, 0x02,
+            0x20, 0x04, 0x10, 0x08, 0x08, 0x10, 0x04, 0x20
+        };
+        return WIFI_ICON;
+    }
+
+    bool isConnected() const {
+        return WiFi.status() == WL_CONNECTED;
+    }
+
+    // 高级连接控制
+    void setReconnectInterval(uint32_t interval) {
+        reconnectInterval = interval;
+    }
+
+private:
+    const char* ssid;
+    const char* password;
+    const char* serverUrl;
+    const uint32_t connectTimeout;
+    const uint8_t maxRetries;
+    
+    uint32_t lastConnectTime = 0;
+    uint32_t connectionAttempts = 0;
+    uint32_t reconnectInterval = 30000; // 30秒重连间隔
+    
+    struct {
+        int rssi = -127; // 初始无效值
+        uint32_t txCount = 0;
+        uint32_t txSuccess = 0;
+        uint32_t txFailed = 0;
+        uint32_t httpErrors[5] = {0}; // 按错误类型统计
+        uint32_t lastSuccessTime = 0;
+        bool connected = false;
+        uint32_t lastActivity = 0;
+    } stats;
+
+    bool attemptConnect() {
+        if(millis() - lastConnectTime < reconnectInterval) 
+            return false;
+
+        WiFi.disconnect(true);
+        delay(100);
+        
+        WiFi.begin(ssid, password);
+        uint32_t startTime = millis();
+        bool connected = false;
+        
+        while(millis() - startTime < connectTimeout) {
+            if(WiFi.status() == WL_CONNECTED) {
+                connected = true;
+                break;
+            }
+            delay(500);
+        }
+
+        lastConnectTime = millis();
+        connectionAttempts++;
+        
+        if(connected) {
+            stats.connected = true;
+            stats.rssi = WiFi.RSSI();
+        } else {
+            stats.connected = false;
+            stats.rssi = -127;
+        }
+        
+        return connected;
+    }
+
+    void updateStats(bool success) {
+        stats.txCount++;
+        if(success) {
+            stats.txSuccess++;
+            stats.lastSuccessTime = millis();
+        } else {
+            stats.txFailed++;
+        }
+        // 滑动窗口统计（保留最近1000次记录）
+        constexpr uint32_t WINDOW_SIZE = 1000;
+        if(stats.txCount > WINDOW_SIZE) {
+            float ratio = (float)(WINDOW_SIZE - 1) / WINDOW_SIZE;
+            stats.txSuccess = stats.txSuccess * ratio;
+            stats.txFailed = stats.txFailed * ratio;
+            stats.txCount = WINDOW_SIZE;
+        }
+    }
+    void recordHttpError(int code) {
+        // 错误分类统计
+        if(code >= 500 && code < 600) {
+            stats.httpErrors[0]++; // 服务器错误
+        } else if(code >= 400 && code < 500) {
+            stats.httpErrors[1]++; // 客户端错误
+        } else if(code < 0) {
+            stats.httpErrors[2]++; // 网络错误
+        } else {
+            stats.httpErrors[3]++; // 其他错误
+        }
+    }
+};下面是通讯本地多方式传输数据法#pragma once
+#include "CommInterface.h"
+#include <WiFi.h>
+#include <BluetoothSerial.h>
+
+class SerialComm : public CommInterface {
+public:
+    enum TransportMode {
+        SERIAL,
+        WIFI_DIRECT,
+        BLE_SPP
+    };
+
+    // 初始化通信协议
+    void begin() override {
+        switch(currentMode) {
+            case SERIAL:
+                Serial.begin(baudRate);
+                break;
+            case WIFI_DIRECT:
+                setupWiFiDirect();
+                break;
+            case BLE_SPP:
+                setupBLESPP();
+                break;
+        }
+    }
+
+    // 配置串口模式
+    void setSerial(uint32_t baud = 115200) {
+        currentMode = SERIAL;
+        baudRate = baud;
+    }
+
+    // 配置WiFi直连模式
+    void setWiFiDirect(const char* ssid, const char* pass, uint16_t port = 8080) {
+        currentMode = WIFI_DIRECT;
+        wifiSSID = ssid;
+        wifiPassword = pass;
+        tcpPort = port;
+    }
+
+    // 配置蓝牙SPP模式
+    void setBLESPP(const char* deviceName = "WaterMonitor") {
+        currentMode = BLE_SPP;
+        bleDeviceName = deviceName;
+    }
+
+    // 发送数据（支持多模式）
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled) return false;
+
+        // 统一封包协议
+        uint8_t packet[len + 5];
+        packet[0] = 0xAA; // 帧头
+        packet[1] = (len >> 8) & 0xFF;
+        packet[2] = len & 0xFF;
+        memcpy(&packet[3], data, len);
+        uint16_t crc = calculateCRC(data, len);
+        packet[len+3] = (crc >> 8) & 0xFF;
+        packet[len+4] = crc & 0xFF;
+        packet[len+5] = 0x55; // 帧尾
+
+        // 多路传输
+        bool success = false;
+        switch(currentMode) {
+            case SERIAL:
+                success = sendSerial(packet, sizeof(packet));
+                break;
+            case WIFI_DIRECT:
+                success = sendWiFi(packet, sizeof(packet));
+                break;
+            case BLE_SPP:
+                success = sendBLE(packet, sizeof(packet));
+                break;
+        }
+
+        updateStats(success);
+        return success;
+    }
+
+    // 获取状态信息
+    String getStatus() const override {
+        switch(currentMode) {
+            case SERIAL:
+                return "Serial " + String(baudRate/1000) + "kbps";
+            case WIFI_DIRECT:
+                return String("WiFi ") + (WiFi.status()==WL_CONNECTED ? 
+                       WiFi.localIP().toString() : "AP Mode");
+            case BLE_SPP:
+                return String("BLE ") + (bleConnected ? "Connected" : "Available");
+        }
+        return "Unknown Mode";
+    }
+
+private:
+    TransportMode currentMode = SERIAL;
+    
+    // 串口参数
+    uint32_t baudRate = 115200;
+    
+    // WiFi参数
+    const char* wifiSSID = nullptr;
+    const char* wifiPassword = nullptr;
+    uint16_t tcpPort = 8080;
+    WiFiServer tcpServer{tcpPort};
+    WiFiClient tcpClient;
+    
+    // 蓝牙参数
+    const char* bleDeviceName = nullptr;
+    BluetoothSerial bleSerial;
+    bool bleConnected = false;
+
+    // WiFi直连初始化
+    void setupWiFiDirect() {
+        WiFi.softAP(wifiSSID, wifiPassword);
+        tcpServer.begin();
+    }
+
+    // 蓝牙SPP初始化
+    void setupBLESPP() {
+        bleSerial.begin(bleDeviceName);
+        bleSerial.register_callback([](esp_spp_cb_event_t event, 
+                                     esp_spp_cb_param_t* param) {
+            if(event == ESP_SPP_SRV_OPEN_EVT) {
+                bleConnected = true;
+            } else if(event == ESP_SPP_CLOSE_EVT) {
+                bleConnected = false;
+            }
+        });
+    }
+
+    // 串口发送
+    bool sendSerial(const uint8_t* data, size_t len) {
+        return Serial.write(data, len) == len;
+    }
+
+    // WiFi发送
+    bool sendWiFi(const uint8_t* data, size_t len) {
+        if(!tcpClient.connected()) {
+            tcpClient = tcpServer.available();
+        }
+        return tcpClient.availableForWrite() >= len ? 
+               tcpClient.write(data, len) == len : false;
+    }
+
+    // 蓝牙发送
+    bool sendBLE(const uint8_t* data, size_t len) {
+        return bleSerial.write(data, len) == len;
+    }
+
+    // CRC16校验计算
+    uint16_t calculateCRC(const uint8_t* data, size_t len) {
+        uint16_t crc = 0xFFFF;
+        for(size_t i=0; i<len; ++i) {
+            crc ^= (uint16_t)data[i] << 8;
+            for(int j=0; j<8; ++j) {
+                crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+            }
+        }
+        return crc;
+    }
+
+    // 更新传输统计
+    void updateStats(bool success) {
+        stats.txCount++;
+        success ? stats.txSuccess++ : stats.txFailed++;
+    }
+
+    struct {
+        uint32_t txCount = 0;
+        uint32_t txSuccess = 0;
+        uint32_t txFailed = 0;
+    } stats;
+};下面是通讯管理rainmaker程序#pragma once
+#include <esp_rmaker.h>
+#include <esp_rmaker_ota.h>
+#include "CommInterface.h"
+#include "SensorTypes.h"
+class RainMakerComm : public CommInterface {
+public:
+    RainMakerComm(const char* deviceName = "WaterMonitor", 
+                const char* serviceName = "水质监测服务")
+        : deviceName(deviceName),
+          serviceName(serviceName),
+          lastSyncTime(0),
+          otaInProgress(false) {}
+
+    bool begin() override {
+        if(!enabled) return false;
+
+        // 初始化RainMaker核心
+        esp_rmaker_config_t config = {
+            .enable_time_sync = true,
+            .enable_schedule = false,
+            .enable_ota = true,
+            .enable_ts = true
+        };
+        esp_rmaker_node_init(&config, deviceName, serviceName);
+
+        // 创建设备和参数
+        createDeviceWithParams();
+        
+        // 注册回调
+        esp_rmaker_ota_config_t ota_config = {
+            .server_cert = ESP_RMAKER_OTA_DEFAULT_SERVER_CERT
+        };
+        esp_rmaker_ota_enable(&ota_config, otaCallbackRouter);
+        
+        // 启动服务
+        esp_rmaker_start();
+        return true;
+    }
+
+    bool send(const uint8_t* data, size_t len) override {
+        if(!enabled || otaInProgress) return false;
+
+        const FullSensorData* sensorData = reinterpret_cast<const FullSensorData*>(data);
+        
+        // 更新所有参数
+        bool success = true;
+        success &= updateParam(tempParam, sensorData->temperature);
+        success &= updateParam(phParam, sensorData->ph);
+        success &= updateParam(doParam, sensorData->dissolved_oxygen);
+        success &= updateParam(ecParam, sensorData->conductivity);
+        
+        // 记录统计
+        if(success) {
+            stats.txSuccess++;
+        } else {
+            stats.txFailed++;
+        }
+        stats.txCount++;
+        
+        return success;
+    }
+
+    void update() override {
+        // 每5分钟同步设备影子
+        if(millis() - lastSyncTime > 300000) {
+            esp_rmaker_param_update_from_cloud(allParams, 5);
+            lastSyncTime = millis();
+        }
+    }
+
+    CommStats getStats() const override {
+        CommStats s = stats;
+        s.connected = esp_rmaker_is_connected();
+        s.rssi = WiFi.RSSI(); // RainMaker依赖WiFi连接
+        return s;
+    }
+
+    String getStatusLine() const override {
+        return String("RainMaker ") + 
+              (esp_rmaker_is_connected() ? "Connected" : "Disconnected") +
+              " Fw:" + String(esp_rmaker_ota_get_running_version());
+    }
+
+    const uint8_t* getIcon() const override {
+        static const uint8_t CLOUD_ICON[] = {
+            0x00, 0x00, 0x00, 0x00, 0x07, 0xE0, 0x1F, 0xF8, 
+            0x3F, 0xFC, 0x7F, 0xFE, 0x7E, 0x7E, 0xFC, 0x3F,
+            0xF8, 0x1F, 0xF8, 0x1F, 0xFC, 0x3F, 0x7E, 0x7E,
+            0x7F, 0xFE, 0x3F, 0xFC, 0x1F, 0xF8, 0x07, 0xE0
+        };
+        return CLOUD_ICON;
+    }
+
+    // 高级功能
+    void enableOTA(bool enable) {
+        esp_rmaker_ota_enable(enable ? ESP_RMAKER_OTA_USING_PARAMS : ESP_RMAKER_OTA_DISABLE);
+    }
+
+    void factoryReset() {
+        esp_rmaker_factory_reset(2);
+    }
+
+private:
+    const char* deviceName;
+    const char* serviceName;
+    uint32_t lastSyncTime;
+    bool otaInProgress;
+
+    // RainMaker对象
+    esp_rmaker_device_t* device;
+    esp_rmaker_param_t* tempParam;
+    esp_rmaker_param_t* phParam;
+    esp_rmaker_param_t* doParam;
+    esp_rmaker_param_t* ecParam;
+    esp_rmaker_param_t* allParams[5];
+
+    void createDeviceWithParams() {
+        // 创建设备
+        device = esp_rmaker_device_create(deviceName, ESP_RMAKER_DEVICE_OTHER, NULL);
+        
+        // 温度参数
+        tempParam = esp_rmaker_param_create("temperature", "温度", 
+            ESP_RMAKER_PARAM_TEMPERATURE, esp_rmaker_float(0));
+        esp_rmaker_param_add_ui_type(tempParam, ESP_RMAKER_UI_NUMBER);
+        esp_rmaker_param_add_bounds(tempParam, esp_rmaker_float(-40), esp_rmaker_float(100), esp_rmaker_float(0.5));
+        
+        // pH参数
+        phParam = esp_rmaker_param_create("ph", "pH值", 
+            ESP_RMAKER_PARAM_CUSTOM, esp_rmaker_float(0));
+        esp_rmaker_param_add_ui_type(phParam, ESP_RMAKER_UI_SLIDER);
+        esp_rmaker_param_add_bounds(phParam, esp_rmaker_float(0), esp_rmaker_float(14), esp_rmaker_float(0.1));
+        
+        // 溶解氧参数
+        doParam = esp_rmaker_param_create("dissolved_oxygen", "溶解氧",
+            ESP_RMAKER_PARAM_CUSTOM, esp_rmaker_float(0));
+        
+        // 电导率参数
+        ecParam = esp_rmaker_param_create("conductivity", "电导率",
+            ESP_RMAKER_PARAM_CUSTOM, esp_rmaker_float(0));
+        
+        // 添加所有参数
+        esp_rmaker_device_add_params(device, tempParam, 4);
+        
+        // 保存参数指针
+        allParams[0] = tempParam;
+        allParams[1] = phParam;
+        allParams[2] = doParam;
+        allParams[3] = ecParam;
+    }
+
+    bool updateParam(esp_rmaker_param_t* param, float value) {
+        esp_err_t err = esp_rmaker_param_update(param, esp_rmaker_float(value));
+        return err == ESP_OK;
+    }
+
+    static void otaCallbackRouter(esp_rmaker_ota_type_t type, 
+                                 esp_rmaker_ota_info_t* info, 
+                                 esp_rmaker_ota_result_t result,
+                                 void* priv_data) {
+        RainMakerComm* instance = static_cast<RainMakerComm*>(priv_data);
+        instance->handleOtaEvent(type, info, result);
+    }
+
+    void handleOtaEvent(esp_rmaker_ota_type_t type, 
+                      esp_rmaker_ota_info_t* info,
+                      esp_rmaker_ota_result_t result) {
+        switch(type) {
+            case ESP_RMAKER_OTA_STARTING:
+                otaInProgress = true;
+                break;
+            case ESP_RMAKER_OTA_IN_PROGRESS:
+                stats.txSuccess++; // OTA传输统计
+                break;
+            case ESP_RMAKER_OTA_SUCCESSFUL:
+                otaInProgress = false;
+                esp_restart();
+                break;
+            case ESP_RMAKER_OTA_FAILED:
+                otaInProgress = false;
+                stats.txFailed++;
+                break;
+        }
+    }
+    struct {
+        uint32_t txCount = 0;
+        uint32_t txSuccess = 0;
+        uint32_t txFailed = 0;
+        bool connected = false;
+        int rssi = 0;
+    } stats;
+};
