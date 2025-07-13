@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>-AOS | 大一下作息时间-</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#4F46E5',
+                        secondary: '#10B981',
+                        accent: '#F59E0B',
+                        danger: '#EF4444',
+                        dark: '#1E293B',
+                        light: '#F8FAFC'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .timeline-item {
+                @apply relative pl-8 pb-6 border-l-2 border-primary/20 last:border-l-0 last:pb-0;
+            }
+            .timeline-item::before {
+                content: '';
+                @apply absolute left-[-8px] top-1 w-4 h-4 rounded-full bg-primary border-2 border-white;
+            }
+            .phase-card {
+                @apply bg-white rounded-xl shadow-lg overflow-hidden transition-all duration-300 hover:shadow-xl;
+            }
+            .phase-header {
+                @apply bg-gradient-to-r from-primary to-primary/80 text-white p-4;
+            }
+            .phase-header-comp {
+                @apply bg-gradient-to-r from-danger to-danger/80 text-white p-4;
+            }
+            .schedule-row {
+                @apply grid grid-cols-12 gap-4 p-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors;
+            }
+            .animate-fadeIn {
+                animation: fadeIn 0.3s ease-in-out;
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans text-dark">
+    <div class="min-h-screen py-8 px-4 sm:px-6 lg:px-8">
+        <div class="max-w-4xl mx-auto">
+            <!-- 页面标题 -->
+            <header class="text-center mb-10">
+                <h1 class="text-[clamp(1.8rem,5vw,2.5rem)] font-bold text-dark mb-2">
+                    <i class="fa fa-calendar-check-o text-primary mr-2">Per Aspera Ad Astra</i> -作息-
+                </h1>
+                <p class="text-gray-500"></p>
+            </header>
+
+            <!-- 阶段切换标签 -->
+            <div class="flex flex-wrap justify-center gap-2 mb-8">
+                <button id="tab-pre" class="px-4 py-2 bg-primary text-white rounded-full text-sm font-medium">赛前</button>
+                <button id="tab-comp" class="px-4 py-2 bg-danger text-white rounded-full text-sm font-medium">赛时</button>
+                <button id="tab-post" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-full text-sm font-medium transition-colors">赛后</button>
+                <button id="tab-home" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-full text-sm font-medium transition-colors">日常</button>
+            </div>
+
+            <!-- 电赛前阶段 -->
+            <section id="phase-pre" class="phase-card mb-8">
+                <div class="phase-header">
+                    <h2 class="text-xl font-semibold">
+                        <i class="fa fa-rocket mr-2"></i>一、赛前（7.13-7.29）
+                    </h2>
+                </div>
+                <div class="p-4 sm:p-6">
+                    <div class="space-y-1">
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">6:30-7:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-bed text-gray-400 mr-2"></i>起床、洗漱
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">7:00-7:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>早餐
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">7:15-8:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-code text-gray-400 mr-2"></i>算法题练习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:15-8:45</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-python text-gray-400 mr-2"></i>Python学习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:45-8:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:55-10:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-graduation-cap text-gray-400 mr-2"></i>大数竞赛课
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">2小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:55-11:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">11:05-12:35</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛课（理论+实践）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">12:35-13:35</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>午餐（15分钟）+休息（40分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">13:35-13:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>午休
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">20分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">13:55-15:25</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-flask text-gray-400 mr-2"></i>大创准备
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">15:25-15:35</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">15:35-17:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-brain text-gray-400 mr-2"></i>人工智能学习课
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">17:05-17:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">17:15-18:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>晚餐（15分钟）+放松（45分钟，每3天洗澡30分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">18:15-19:45</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-language text-gray-400 mr-2"></i>英语练习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">19:45-19:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">19:55-20:25</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-heartbeat text-gray-400 mr-2"></i>锻炼
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">20:25-20:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-music text-gray-400 mr-2"></i>奏乐
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">20:55-22:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-book text-gray-400 mr-2"></i>概率论与数理统计/人工智能论文课（周一）+整理当日内容
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">80分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">22:15-6:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>睡眠
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">8.25小时</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 电赛期间阶段 -->
+            <section id="phase-comp" class="phase-card mb-8">
+                <div class="phase-header-comp">
+                    <h2 class="text-xl font-semibold">
+                        <i class="fa fa-bolt mr-2"></i>二、赛时（7.30-8.2）
+                    </h2>
+                </div>
+                <div class="p-4 sm:p-6">
+                    <div class="space-y-1">
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">4:00-4:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-bed text-gray-400 mr-2"></i>起床、快速洗漱
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">4:15-6:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛项目赶工
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">2小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">6:15-6:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>简易早餐+短暂休息
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">6:30-12:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛项目赶工
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">5.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">12:00-12:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>简餐+快速休息
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">12:30-18:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛项目赶工
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">5.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">18:00-18:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>简餐+短暂放松
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">18:30-22:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛项目赶工
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">3.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-danger font-medium">22:00-4:00 or可通宵</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>睡眠
+                            </div>
+                            <div class="col-span-2 text-center bg-red-50 text-danger rounded-full py-1 text-sm">6小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-12 flex items-center justify-center bg-red-50 p-2 rounded-lg mt-2">
+                                <i class="fa fa-exclamation-triangle text-danger mr-2"></i>
+                                <span class="text-danger text-sm">注：此阶段赶工时间+∞，休息时间-∞，所有非必要活动暂停，全力保障电赛任务</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 电赛后阶段 -->
+            <section id="phase-post" class="phase-card mb-8 hidden">
+                <div class="phase-header">
+                    <h2 class="text-xl font-semibold">
+                        <i class="fa fa-flag-checkered mr-2"></i>三、赛后（8.3-8.4）
+                    </h2>
+                </div>
+                <div class="p-4 sm:p-6">
+                    <div class="space-y-1">
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">7:00-7:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-bed text-gray-400 mr-2"></i>起床、洗漱、早餐
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">7:15-8:15</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-code text-gray-400 mr-2"></i>算法题练习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:15-8:45</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-python text-gray-400 mr-2"></i>Python学习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:45-8:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">8:55-10:25</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cogs text-gray-400 mr-2"></i>电赛后续整理
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:25-10:35</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:35-12:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-brain text-gray-400 mr-2"></i>人工智能内容复习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">12:05-13:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>午餐（15分钟）+休息（40分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">13:05-13:25</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>午休
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">20分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">13:25-14:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-calculator text-gray-400 mr-2"></i>复变函数学习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">14:55-15:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">15:05-16:35</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-flask text-gray-400 mr-2"></i>大创准备
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">16:35-17:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-suitcase text-gray-400 mr-2"></i>整理回家行李
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.3小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">17:55-18:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>晚餐（15分钟）+放松（45分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">18:55-19:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-heartbeat text-gray-400 mr-2"></i>锻炼
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">19:55-20:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-music text-gray-400 mr-2"></i>奏乐
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">20:55-21:55</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-language text-gray-400 mr-2"></i>英语练习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">21:55-22:05</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-shower text-gray-400 mr-2"></i>洗澡（回家前最后一次）+准备入睡
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">22:05-7:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>睡眠
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">8.9小时</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 回家期间阶段 -->
+            <section id="phase-home" class="phase-card hidden">
+                <div class="phase-header">
+                    <h2 class="text-xl font-semibold">
+                        <i class="fa fa-home mr-2"></i>四、日常（8.5-8.30）
+                    </h2>
+                </div>
+                <div class="p-4 sm:p-6">
+                    <div class="space-y-1">
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">6:30-6:45</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-bed text-gray-400 mr-2"></i>起床、洗漱
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">6:45-7:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>早餐
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">15分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">7:00-9:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-car text-gray-400 mr-2"></i>练车（可灵活调整时段）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">2小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">9:00-9:10</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">9:10-10:10</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-code text-gray-400 mr-2"></i>算法题练习（含总结）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:10-10:40</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-python text-gray-400 mr-2"></i>Python学习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:40-10:50</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">10:50-12:20</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>午餐（15分钟）+休息（75分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">12:20-12:40</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>午休
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">20分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">12:40-15:50</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-graduation-cap text-gray-400 mr-2"></i>大数竞赛课学习（含中间10分钟休息）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">3.17小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">15:50-16:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">16:00-17:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-calculator text-gray-400 mr-2"></i>数学学习（概率论45分钟+复变函数45分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">17:30-17:40</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">17:40-18:40</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-cutlery text-gray-400 mr-2"></i>晚餐（15分钟）+放松（45分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">18:40-20:10</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-brain text-gray-400 mr-2"></i>人工智能学习课
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1.5小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">20:10-20:20</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-coffee text-gray-400 mr-2"></i>休息
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">10分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">20:20-21:20</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-language text-gray-400 mr-2"></i>英语练习
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">1小时</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">21:20-21:50</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-heartbeat text-gray-400 mr-2"></i>锻炼（20分钟）+洗澡（10分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">30分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">21:50-22:00</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-music text-gray-400 mr-2"></i>奏乐（10分钟）+准备入睡（10分钟）
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">20分钟</div>
+                        </div>
+                        <div class="schedule-row">
+                            <div class="col-span-3 font-mono text-primary font-medium">22:00-6:30</div>
+                            <div class="col-span-7 flex items-center">
+                                <i class="fa fa-moon-o text-gray-400 mr-2"></i>睡眠
+                            </div>
+                            <div class="col-span-2 text-center bg-blue-50 text-primary rounded-full py-1 text-sm">8.5小时</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 统计卡片 -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
+                <div class="bg-white rounded-lg shadow p-4 border-l-4 border-primary">
+                    <h3 class="text-gray-500 text-sm font-medium">学习时长</h3>
+                    <p class="text-2xl font-bold mt-1">8.5小时/天</p>
+                    <p class="text-green-500 text-xs mt-1"><i class="fa fa-arrow-up"></i> 强化学习</p>
+                </div>
+                <div class="bg-white rounded-lg shadow p-4 border-l-4 border-secondary">
+                    <h3 class="text-gray-500 text-sm font-medium">休息时间</h3>
+                    <p class="text-2xl font-bold mt-1">2小时/天</p>
+                    <p class="text-blue-500 text-xs mt-1"><i class="fa fa-balance-scale"></i> 精准控制</p>
+                </div>
+                <div class="bg-white rounded-lg shadow p-4 border-l-4 border-accent">
+                    <h3 class="text-gray-500 text-sm font-medium">睡眠时间</h3>
+                    <p class="text-2xl font-bold mt-1">8.5小时/天</p>
+                    <p class="text-purple-500 text-xs mt-1"><i class="fa fa-bed"></i> 充足恢复</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 阶段切换功能
+        document.getElementById('tab-pre').addEventListener('click', function() {
+            showPhase('pre');
+        });
+        document.getElementById('tab-comp').addEventListener('click', function() {
+            showPhase('comp');
+        });
+        document.getElementById('tab-post').addEventListener('click', function() {
+            showPhase('post');
+        });
+        document.getElementById('tab-home').addEventListener('click', function() {
+            showPhase('home');
+        });
+        
+        function showPhase(phase) {
+            // 隐藏所有阶段
+            document.querySelectorAll('[id^="phase-"]').forEach(el => {
+                el.classList.add('hidden');
+            });
+            // 显示选中阶段
+            document.getElementById(`phase-${phase}`).classList.remove('hidden');
+            
+            // 更新标签样式
+            document.querySelectorAll('[id^="tab-"]').forEach(tab => {
+                tab.classList.remove('bg-primary', 'bg-danger', 'text-white');
+                tab.classList.add('bg-gray-200', 'hover:bg-gray-300');
+            });
+            // 特殊处理电赛期间的红色标签
+            const activeTab = document.getElementById(`tab-${phase}`);
+            activeTab.classList.remove('bg-gray-200', 'hover:bg-gray-300');
+            if (phase === 'comp') {
+                activeTab.classList.add('bg-danger', 'text-white');
+            } else {
+                activeTab.classList.add('bg-primary', 'text-white');
+            }
+            
+            // 添加过渡动画
+            document.getElementById(`phase-${phase}`).classList.add('animate-fadeIn');
+        }
+
+        // 平滑滚动
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+    </script>
+</body>
+</html>
